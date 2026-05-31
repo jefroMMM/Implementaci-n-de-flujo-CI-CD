@@ -1,0 +1,96 @@
+name: CI/CD deploy to VPS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate application
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build TypeScript
+        run: npm run build
+
+  deploy:
+    name: Deploy to VPS
+    needs: validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create deploy package
+        run: |
+          mkdir deploy-package
+          cp -R src Dockerfile compose.yml package.json package-lock.json tsconfig.json vitest.config.ts .dockerignore deploy-package/
+          tar -czf deploy-package.tgz -C deploy-package .
+
+      - name: Copy package to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          source: deploy-package.tgz
+          target: /tmp/cicd-vps-demo
+          overwrite: true
+
+      - name: Build and restart service on VPS
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          GIT_SHA: ${{ github.sha }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          envs: GIT_SHA
+          script_stop: true
+          script: |
+            set -e
+
+            APP_DIR="/opt/cicd-vps-demo"
+            RELEASE_DIR="/tmp/cicd-vps-demo-release-${GIT_SHA}"
+
+            rm -rf "${RELEASE_DIR}"
+            mkdir -p "${RELEASE_DIR}"
+            tar -xzf /tmp/cicd-vps-demo/deploy-package.tgz -C "${RELEASE_DIR}"
+
+            sudo mkdir -p "${APP_DIR}"
+            if command -v rsync >/dev/null 2>&1; then
+              sudo rsync -a --delete "${RELEASE_DIR}/" "${APP_DIR}/"
+            else
+              sudo cp -a "${RELEASE_DIR}/." "${APP_DIR}/"
+            fi
+
+            cd "${APP_DIR}"
+            sudo env GIT_SHA="${GIT_SHA}" docker compose up -d --build --remove-orphans
+            sudo docker image prune -f
+
+            rm -rf "${RELEASE_DIR}" /tmp/cicd-vps-demo/deploy-package.tgz
+
+      - name: Smoke test public endpoint
+        run: |
+          curl -fsS --retry 12 --retry-delay 5 "http://${{ secrets.VPS_HOST }}/health"
