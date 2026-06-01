@@ -217,3 +217,7 @@ Reglas aplicadas:
 | Despliegue manual inseguro | El pipeline usa SSH con llave privada guardada como GitHub Secret. |
 
 Nota: se encontro en `week-14/README.md` un texto de ejemplo con `-----BEGIN OPENSSH PRIVATE KEY-----...`; es documentacion ilustrativa, no una llave real.
+
+
+git commit --allow-empty -m "Video demo deployment"
+git push origin main
